@@ -19,20 +19,39 @@ diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
  import type { Detail, Episode, Post, VideoCard } from "../types";
  import { useStore } from "../store";
  import { Avatar, Img, Sheet } from "./ui";
-@@ -43,6 +43,7 @@
+@@ -43,6 +43,8 @@
    const [epMap, setEpMap] = useState<Record<number, number>>(() => (startEp ? { [videoIds[startIndex]]: startEp } : {}));
    const [details, setDetails] = useState<Record<number, Detail>>({});
    const [playUrls, setPlayUrls] = useState<Record<string, string>>({});
 +  const [sourceAttempt, setSourceAttempt] = useState(0);
++  const [pendingWebKey, setPendingWebKey] = useState<string | null>(null);
    const [cards, setCards] = useState<Record<number, VideoCard>>({});
    const [posts, setPosts] = useState<Record<number, Post>>({});
  
-@@ -249,7 +250,28 @@
+@@ -236,20 +238,63 @@
+ 
+   /* 拉播放地址 */
+   useEffect(() => {
++    setPendingWebKey(null);
+     if (!curId) return;
+     if (playUrls[playKey]) return;
+     let alive = true;
+     api.play(curId, curEp)
+       .then((info) => {
+         if (!alive) return;
+-        if (!info?.video_url) throw new Error("暂无播放地址");
++        if (!info?.video_url) {
++          if (isIos && kind === "video") setPendingWebKey(playKey);
++          throw new Error("暂无播放地址");
++        }
+         setPlayUrls((m) => ({ ...m, [playKey]: info.video_url }));
+         addHistory(curId, curEp);
+       })
        .catch((e) => { if (alive) setErr((e as Error).message || "取播放地址失败"); });
      return () => { alive = false; };
      // eslint-disable-next-line react-hooks/exhaustive-deps
 -  }, [curId, curEp]);
-+  }, [curId, curEp, sourceAttempt]);
++  }, [curId, curEp, kind, sourceAttempt]);
 +
 +  const retryPlayback = () => {
 +    setErr("");
@@ -46,27 +65,55 @@ diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
 +    setSourceAttempt(n => n + 1);
 +  };
 +
-+  const openShowPlayer = async () => {
++  const openShowPlayer = useCallback(async () => {
++    setPendingWebKey(null);
 +    videoRef.current?.pause();
 +    try {
 +      await api.openShowPlayer(curId);
 +    } catch (e) {
 +      toast(e instanceof Error ? e.message : "無法開啟劇集頁，請再試一次", "info");
 +    }
-+  };
++  }, [curId, toast]);
++
++  useEffect(() => {
++    if (!active || panel || store.loginOpen || pendingWebKey !== playKey) return;
++    // Let a fast swipe settle. A hidden feed must never open over a different screen.
++    let consumed = false;
++    const present = () => {
++      if (consumed || document.hidden) return;
++      consumed = true;
++      void openShowPlayer();
++    };
++    const timer = window.setTimeout(present, 160);
++    document.addEventListener("visibilitychange", present);
++    return () => {
++      window.clearTimeout(timer);
++      document.removeEventListener("visibilitychange", present);
++    };
++  }, [active, panel, store.loginOpen, pendingWebKey, playKey, openShowPlayer]);
  
    /* 切换条目/集数时重置播放状态 */
    useEffect(() => {
-@@ -748,7 +770,11 @@
+@@ -746,9 +791,19 @@
+               {isActive && err && (
+                 <div className="absolute inset-0 z-20 flex items-center justify-center">
                    <div className="rounded-xl p-5 flex flex-col items-center gap-3 text-[13px] hg-ink-2" style={{ background: "rgba(0,0,0,.7)" }}>
-                     <span>视频暂时无法加载</span>
-                     <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
+-                    <span>视频暂时无法加载</span>
+-                    <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
 -                    <button className="hg-link text-[12.5px]" onClick={() => { setErr(""); setWaiting(true); videoRef.current?.play(); }}>重试</button>
-+                    {isIos && kind === "video" && (
-+                      <button type="button" className="min-h-11 rounded-full bg-white px-5 text-[14px] font-semibold text-black"
-+                        onClick={openShowPlayer}>在 App 內播放</button>
++                    {pendingWebKey === playKey ? (
++                      <span role="status">正在開啟 App 內播放器…</span>
++                    ) : (
++                      <>
++                        <span>视频暂时无法加载</span>
++                        <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
++                        {isIos && kind === "video" && (
++                          <button type="button" className="min-h-11 rounded-full bg-white px-5 text-[14px] font-semibold text-black"
++                            onClick={openShowPlayer}>在 App 內播放</button>
++                        )}
++                        <button className="hg-link text-[12.5px]" onClick={retryPlayback}>重试</button>
++                      </>
 +                    )}
-+                    <button className="hg-link text-[12.5px]" onClick={retryPlayback}>重试</button>
                    </div>
                  </div>
                )}
