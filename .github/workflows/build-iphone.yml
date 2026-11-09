@@ -74,15 +74,15 @@ jobs:
               executable = plists[0].rsplit("/", 1)[0] + "/" + info["CFBundleExecutable"]
               if (info.get("CFBundleIdentifier") != "com.hghub.huangguo"
                       or info.get("CFBundleShortVersionString") != "1.2.0"
-                      or info.get("CFBundleVersion") != "2"
+                      or info.get("CFBundleVersion") != "3"
                       or "iPhoneOS" not in info.get("CFBundleSupportedPlatforms", [])
                       or archive.getinfo(executable).file_size == 0):
                   raise SystemExit("The IPA does not contain the expected iPhone build")
               binary = archive.read(executable)
-              if b"SFSafariViewController" not in binary or b"open_show_player" not in binary:
-                  raise SystemExit("Missing in-app player integration")
+              if b"HGInlineShowView" not in binary or b"sync_show_player" not in binary or b"open_show_player" in binary:
+                  raise SystemExit("Missing inline player or found the previous modal command")
           Path("output").mkdir(exist_ok=True)
-          shutil.copyfile(package, "output/HGhub-1.2.0-iPhone-build2.ipa")
+          shutil.copyfile(package, "output/HGhub-1.2.0-iPhone-build3.ipa")
 
           shutil.copyfile("LICENSE", "output/LICENSE.txt")
 
@@ -92,3 +92,21 @@ jobs:
           path: output/
           if-no-files-found: error
           retention-days: 7
+
+  inline-playback-test:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Minireel/HGhub
+          ref: 79827baa7542fead68919e7b45f5bfde86b18ee7
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: iphone-build
+          persist-credentials: false
+      - name: Play a local video inside the feed surface on an iPhone simulator
+        run: |
+          git apply --whitespace=error iphone-build/iphone-player.patch
+          bash tests/ios-inline/run.sh
