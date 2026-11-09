@@ -1,38 +1,52 @@
 diff --git a/src/api.ts b/src/api.ts
 --- a/src/api.ts
 +++ b/src/api.ts
-@@ -111,6 +111,7 @@
+@@ -111,6 +111,8 @@
    /* 更新检查：对比 GitHub Release 的 tag */
    checkUpdate: () => call<UpdateInfo>("check_update"),
    openUrl: (url: string) => call<void>("open_url", { url }),
-+  openShowPlayer: (id: number) => call<void>("open_show_player", { id }),
++  syncShowPlayer: (id: number, frame: number[] | null) =>
++    call<void>("sync_show_player", { id, frame }),
  };
  
  /* ── 更新检查 ───────────────────────────────────────────── */
 diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
 --- a/src/components/Feed.tsx
 +++ b/src/components/Feed.tsx
-@@ -1,5 +1,5 @@
+@@ -1,9 +1,10 @@
  import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 -import { api, cover, fmt, fmtTime, isMobile, mediaUrl } from "../api";
 +import { api, cover, fmt, fmtTime, isIos, isMobile, mediaUrl } from "../api";
  import type { Detail, Episode, Post, VideoCard } from "../types";
  import { useStore } from "../store";
  import { Avatar, Img, Sheet } from "./ui";
-@@ -43,6 +43,8 @@
+ import VideoSurface, { type VideoHandle } from "./VideoSurface";
++import InlineShowPlayer from "./InlineShowPlayer";
+ import PlayerControls from "./PlayerControls";
+ import PlaybackLock from "./PlaybackLock";
+ import { ArticlePanel, CommentsPanel, EpisodesPanel } from "./Panels";
+@@ -43,6 +44,8 @@
    const [epMap, setEpMap] = useState<Record<number, number>>(() => (startEp ? { [videoIds[startIndex]]: startEp } : {}));
    const [details, setDetails] = useState<Record<number, Detail>>({});
    const [playUrls, setPlayUrls] = useState<Record<string, string>>({});
 +  const [sourceAttempt, setSourceAttempt] = useState(0);
-+  const [pendingWebKey, setPendingWebKey] = useState<string | null>(null);
++  const [webKey, setWebKey] = useState<string | null>(null);
    const [cards, setCards] = useState<Record<number, VideoCard>>({});
    const [posts, setPosts] = useState<Record<number, Post>>({});
  
-@@ -236,20 +238,63 @@
+@@ -109,6 +112,7 @@
+   const curEp = epMap[curId] || 1;
+   const playKey = `${curId}:${curEp}`;
+   const playUrl = playUrls[playKey] || "";
++  const inline = isIos && kind === "video" && webKey === playKey;
+   useEffect(() => { videoRef.current?.trace("page.active", { active, view: mode, video_id: curId, episode: curEp }); }, [active, mode, curId, curEp]);
+   const episodes = detail?.episodes || [];
+   const post = posts[curId];
+@@ -236,20 +240,36 @@
  
    /* 拉播放地址 */
    useEffect(() => {
-+    setPendingWebKey(null);
++    setWebKey(null);
      if (!curId) return;
      if (playUrls[playKey]) return;
      let alive = true;
@@ -41,7 +55,7 @@ diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
          if (!alive) return;
 -        if (!info?.video_url) throw new Error("暂无播放地址");
 +        if (!info?.video_url) {
-+          if (isIos && kind === "video") setPendingWebKey(playKey);
++          if (isIos && kind === "video") { setWebKey(playKey); return; }
 +          throw new Error("暂无播放地址");
 +        }
          setPlayUrls((m) => ({ ...m, [playKey]: info.video_url }));
@@ -64,59 +78,155 @@ diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
 +    });
 +    setSourceAttempt(n => n + 1);
 +  };
-+
-+  const openShowPlayer = useCallback(async () => {
-+    setPendingWebKey(null);
-+    videoRef.current?.pause();
-+    try {
-+      await api.openShowPlayer(curId);
-+    } catch (e) {
-+      toast(e instanceof Error ? e.message : "無法開啟劇集頁，請再試一次", "info");
-+    }
-+  }, [curId, toast]);
-+
-+  useEffect(() => {
-+    if (!active || panel || store.loginOpen || pendingWebKey !== playKey) return;
-+    // Let a fast swipe settle. A hidden feed must never open over a different screen.
-+    let consumed = false;
-+    const present = () => {
-+      if (consumed || document.hidden) return;
-+      consumed = true;
-+      void openShowPlayer();
-+    };
-+    const timer = window.setTimeout(present, 160);
-+    document.addEventListener("visibilitychange", present);
-+    return () => {
-+      window.clearTimeout(timer);
-+      document.removeEventListener("visibilitychange", present);
-+    };
-+  }, [active, panel, store.loginOpen, pendingWebKey, playKey, openShowPlayer]);
  
    /* 切换条目/集数时重置播放状态 */
    useEffect(() => {
-@@ -746,9 +791,19 @@
+@@ -536,6 +556,32 @@
+         style={{ right: isDesktop && panel ? 372 : 0, transition: "right .3s cubic-bezier(.2,0,0,1)" }}>
+         {videoIds.map((vid, i) => {
+           const isActive = i === index;
++          if (isActive && inline) {
++            return (
++              <section key={vid} className="relative flex w-full h-full flex-col snap-start snap-always overflow-hidden bg-black text-white"
++                style={{ paddingTop: "var(--sat, 0px)", paddingBottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
++                <header className="flex h-12 shrink-0 items-center gap-2 px-2">
++                  {onBack && <button aria-label="返回" className="size-11 grid place-items-center" onClick={onBack}><IBack size={21} /></button>}
++                  <span className="min-w-0 flex-1 truncate px-1 text-sm font-semibold">{meta.title || title}</span>
++                  {fs && <button aria-label="退出全屏" className="size-11 grid place-items-center" onClick={() => setFs(false)}><ICompress size={19} /></button>}
++                  {mode === "home" && <button aria-label="搜索" className="size-11 grid place-items-center" onClick={() => store.setTab("search")}><ISearch size={20} /></button>}
++                  <button aria-label="收藏" aria-pressed={isFav(vid)} className="size-11 grid place-items-center" onClick={onFav}>
++                    {isFav(vid) ? <IStarF size={20} /> : <IStar size={20} />}
++                  </button>
++                  <button aria-label="分享" className="size-11 grid place-items-center" onClick={shareLink}><ILink size={20} /></button>
++                </header>
++                <div className="relative flex-1 min-h-0">
++                  {active && !panel && !store.loginOpen && !controlsLocked && <InlineShowPlayer key={playKey} id={vid} />}
++                </div>
++                <div className="flex h-12 shrink-0 items-center gap-1 px-2" style={{ touchAction: "pan-y" }}>
++                  <button className="px-2 min-h-11 text-sm" onClick={() => setPanel("detail")}>詳情</button>
++                  <button className="px-2 min-h-11 text-sm" onClick={() => setPanel("comments")}>留言</button>
++                  <button className="ml-auto size-11 grid place-items-center disabled:opacity-30" aria-label="上一部" disabled={i === 0} onClick={() => go(-1)}><IChevronUp size={22} /></button>
++                  <button className="size-11 grid place-items-center disabled:opacity-30" aria-label="下一部" disabled={i + 1 === videoIds.length} onClick={() => go(1)}><IChevronDown size={22} /></button>
++                </div>
++              </section>
++            );
++          }
+           return (
+             <section key={vid} className="relative w-full h-full snap-start snap-always overflow-hidden">
+               {isActive && playUrl ? (
+@@ -746,9 +792,13 @@
                {isActive && err && (
                  <div className="absolute inset-0 z-20 flex items-center justify-center">
                    <div className="rounded-xl p-5 flex flex-col items-center gap-3 text-[13px] hg-ink-2" style={{ background: "rgba(0,0,0,.7)" }}>
 -                    <span>视频暂时无法加载</span>
 -                    <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
 -                    <button className="hg-link text-[12.5px]" onClick={() => { setErr(""); setWaiting(true); videoRef.current?.play(); }}>重试</button>
-+                    {pendingWebKey === playKey ? (
-+                      <span role="status">正在開啟 App 內播放器…</span>
-+                    ) : (
-+                      <>
 +                        <span>视频暂时无法加载</span>
 +                        <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
 +                        {isIos && kind === "video" && (
 +                          <button type="button" className="min-h-11 rounded-full bg-white px-5 text-[14px] font-semibold text-black"
-+                            onClick={openShowPlayer}>在 App 內播放</button>
++                            onClick={() => setWebKey(playKey)}>在此播放</button>
 +                        )}
 +                        <button className="hg-link text-[12.5px]" onClick={retryPlayback}>重试</button>
-+                      </>
-+                    )}
                    </div>
                  </div>
                )}
+@@ -808,7 +858,7 @@
+       )}
+ 
+       {/* 移动端全屏模式下的进度条（普通模式的进度条在底部灰块里） */}
+-      {!isDesktop && fs && (
++      {!isDesktop && fs && !inline && (
+         <div className="absolute inset-x-0 z-30 px-4" style={{ bottom: "calc(var(--sab, 0px) + 52px)", height: 22 }}>
+           <div ref={barRef} className="relative h-full" style={{ touchAction: "none" }}
+             onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarUp}>
+@@ -820,7 +870,7 @@
+       )}
+ 
+       {/* 移动端：沉浸全屏（安卓 WebView 不支持 Fullscreen API，改用应用内沉浸层） */}
+-      {!isDesktop && fs && (
++      {!isDesktop && fs && !inline && (
+         <>
+           <button onClick={() => setFs(false)} aria-label="退出全屏"
+             className="hg-chip-strong absolute right-3 z-40 w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1"
+@@ -945,7 +995,7 @@
+         </>
+       )}
+       </div>
+-      {!isDesktop && !controlsLocked && active && (
++      {!isDesktop && !inline && !controlsLocked && active && (
+         <div className={`absolute z-40 flex items-center gap-2 ${fs ? "right-14" : "right-3"}`} style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
+           {!fs && <button onClick={() => setMuted(m => !m)} aria-label={muted ? "取消静音" : "静音"}
+             className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
+diff --git a/src/components/InlineShowPlayer.tsx b/src/components/InlineShowPlayer.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/InlineShowPlayer.tsx
+@@ -0,0 +1,64 @@
++import { useEffect, useRef, useState } from "react";
++import { api } from "../api";
++
++// UIKit work is asynchronous. Sequence removals and mounts across the feed stack.
++let nativeQueue = Promise.resolve();
++
++export default function InlineShowPlayer({ id }: { id: number }) {
++  const slot = useRef<HTMLDivElement>(null);
++  const [attempt, setAttempt] = useState(0);
++  const [failed, setFailed] = useState(false);
++  useEffect(() => {
++    const el = slot.current!;
++    const scroller = el.closest("section")!.parentElement!;
++    let disposed = false;
++    let raf = 0;
++    let revision = 0;
++    let last = "";
++    const send = (frame: number[] | null) => {
++      const key = JSON.stringify(frame);
++      if (key === last) return;
++      last = key;
++      const version = ++revision;
++      nativeQueue = nativeQueue.then(async () => {
++        if (!disposed && revision === version) await api.syncShowPlayer(id, frame);
++      }).catch(() => { if (!disposed && revision === version) setFailed(true); });
++    };
++    const measure = () => {
++      raf = 0;
++      const r = el.getBoundingClientRect();
++      const section = el.closest("section")!.getBoundingClientRect();
++      const view = scroller.getBoundingClientRect();
++      const w = window.innerWidth;
++      if (document.hidden || w < 1 || r.width < 1 || r.height < 1) { send(null); return; }
++      // Hide the native surface during a swipe so it never covers the neighbouring card.
++      if (Math.abs(section.top - view.top) > 1) { send([0, 0, 0, 0]); return; }
++      send([r.left, r.top, r.width, r.height].map(n => n / w));
++    };
++    const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
++    const visibility = () => { if (document.hidden) send(null); else schedule(); };
++    const resize = new ResizeObserver(schedule);
++    resize.observe(el);
++    scroller.addEventListener("scroll", schedule, { passive: true });
++    window.addEventListener("resize", schedule);
++    document.addEventListener("animationend", schedule, true);
++    document.addEventListener("visibilitychange", visibility);
++    schedule();
++    return () => {
++      disposed = true;
++      cancelAnimationFrame(raf);
++      resize.disconnect();
++      scroller.removeEventListener("scroll", schedule);
++      window.removeEventListener("resize", schedule);
++      document.removeEventListener("animationend", schedule, true);
++      document.removeEventListener("visibilitychange", visibility);
++      nativeQueue = nativeQueue.then(() => api.syncShowPlayer(id, null)).catch(() => {});
++    };
++  }, [id, attempt]);
++  return (
++    <div ref={slot} aria-label="劇集播放器" className="absolute inset-0 grid place-items-center bg-black">
++      {failed ? <button className="min-h-11 px-4 text-white" onClick={() => { setFailed(false); setAttempt(n => n + 1); }}>重新載入播放頁</button>
++        : <div className="w-8 h-8 spinner" role="status" aria-label="載入播放頁" />}
++    </div>
++  );
++}
 diff --git a/src-tauri/build.rs b/src-tauri/build.rs
 --- a/src-tauri/build.rs
 +++ b/src-tauri/build.rs
@@ -128,7 +238,7 @@ diff --git a/src-tauri/build.rs b/src-tauri/build.rs
 +            .flag("-fobjc-arc")
 +            .compile("ios_show_player");
 +        println!("cargo:rerun-if-changed=src/ios_show_player.m");
-+        println!("cargo:rustc-link-lib=framework=SafariServices");
++        println!("cargo:rustc-link-lib=framework=WebKit");
 +    }
      tauri_build::build()
  }
@@ -158,26 +268,106 @@ diff --git a/src-tauri/src/ios_show_player.m b/src-tauri/src/ios_show_player.m
 new file mode 100644
 --- /dev/null
 +++ b/src-tauri/src/ios_show_player.m
-@@ -0,0 +1,21 @@
-+#import <SafariServices/SafariServices.h>
+@@ -0,0 +1,101 @@
 +#import <UIKit/UIKit.h>
++#import <WebKit/WebKit.h>
++#import <objc/runtime.h>
 +#include <stdint.h>
 +
-+int32_t hghub_present_show(void *controller, uint64_t showID) {
-+    UIViewController *host = (__bridge UIViewController *)controller;
-+    if (!NSThread.isMainThread || !host.viewIfLoaded.window || showID == 0) {
-+        return 0;
++// A child of the app's web view, with its own configuration and no app script handlers.
++@interface HGInlineShowView : UIView <WKNavigationDelegate>
++@property(nonatomic, readonly) uint64_t showID;
++@property(nonatomic, strong) WKWebView *web;
++@property(nonatomic, strong) NSURL *showURL;
++@property(nonatomic, strong) UIButton *retry;
++@end
++
++@implementation HGInlineShowView
++- (instancetype)initWithShowID:(uint64_t)showID {
++    self = [super initWithFrame:CGRectZero];
++    if (!self) return nil;
++    _showID = showID;
++    self.clipsToBounds = YES;
++    self.backgroundColor = UIColor.blackColor;
++    WKWebViewConfiguration *config = [WKWebViewConfiguration new];
++    config.allowsInlineMediaPlayback = YES;
++    config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
++    config.preferences.javaScriptCanOpenWindowsAutomatically = NO;
++    // The inline attribute also applies to video elements created after the page loads.
++    NSString *inlineVideo = @"const mark = el => { if (el.tagName === 'VIDEO') el.playsInline = true; };"
++        "new MutationObserver(records => { for (const r of records) for (const el of r.addedNodes) {"
++        " if (el.nodeType !== 1) continue; mark(el); el.querySelectorAll('video').forEach(mark);"
++        "} }).observe(document, {subtree:true, childList:true});";
++    [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:inlineVideo
++        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO
++        inContentWorld:WKContentWorld.defaultClientWorld]];
++    _web = [[WKWebView alloc] initWithFrame:self.bounds configuration:config];
++    _web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++    _web.navigationDelegate = self;
++    _web.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
++    [self addSubview:_web];
++    _retry = [UIButton buttonWithType:UIButtonTypeSystem];
++    [_retry setTitle:@"播放頁載入失敗，點此重試" forState:UIControlStateNormal];
++    _retry.backgroundColor = UIColor.systemBackgroundColor;
++    _retry.translatesAutoresizingMaskIntoConstraints = NO;
++    [_retry addTarget:self action:@selector(loadShow) forControlEvents:UIControlEventTouchUpInside];
++    [self addSubview:_retry];
++    [NSLayoutConstraint activateConstraints:@[
++        [_retry.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
++        [_retry.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
++        [_retry.heightAnchor constraintGreaterThanOrEqualToConstant:44],
++    ]];
++    _showURL = [NSURL URLWithString:[NSString stringWithFormat:@"https://huangguoai.com/video/%llu/", (unsigned long long)showID]];
++    [self loadShow];
++    return self;
++}
++- (void)loadShow {
++    self.retry.hidden = YES;
++    [self.web loadRequest:[NSURLRequest requestWithURL:self.showURL]];
++}
++- (void)webView:(WKWebView *)view didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
++    if (![error.domain isEqualToString:NSURLErrorDomain] || error.code != NSURLErrorCancelled) self.retry.hidden = NO;
++}
++- (void)webView:(WKWebView *)view didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
++    [self webView:view didFailProvisionalNavigation:navigation withError:error];
++}
++- (void)webViewWebContentProcessDidTerminate:(WKWebView *)view { self.retry.hidden = NO; }
++- (void)webView:(WKWebView *)view didFinishNavigation:(WKNavigation *)navigation { self.retry.hidden = YES; }
++- (void)detach {
++    self.web.navigationDelegate = nil;
++    [self.web stopLoading];
++    [self.web pauseAllMediaPlaybackWithCompletionHandler:nil];
++    [self removeFromSuperview];
++}
++@end
++
++static char playerKey;
++int32_t hghub_sync_inline(void *hostPointer, uint64_t showID, const double *frame) {
++    WKWebView *host = (__bridge WKWebView *)hostPointer;
++    if (!NSThread.isMainThread || !host) return 0;
++    HGInlineShowView *player = objc_getAssociatedObject(host, &playerKey);
++    if (!frame) {
++        if (player && player.showID == showID) {
++            [player detach];
++            objc_setAssociatedObject(host, &playerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++        }
++        return 1;
 +    }
-+    if (host.presentedViewController) {
-+        return [host.presentedViewController isKindOfClass:SFSafariViewController.class] ? 1 : 0;
++    CGFloat scale = host.bounds.size.width;
++    CGRect rect = CGRectIntersection(host.bounds, CGRectMake(frame[0]*scale, frame[1]*scale, frame[2]*scale, frame[3]*scale));
++    if (CGRectIsEmpty(rect)) {
++        if (player.showID == showID) player.hidden = YES;
++        return 1;
 +    }
-+    // The upstream share button opens the show's public page. Episode selection is on that page.
-+    NSString *address = [NSString stringWithFormat:@"https://huangguoai.com/video/%llu/", (unsigned long long)showID];
-+    NSURL *url = [NSURL URLWithString:address];
-+    SFSafariViewController *player = [[SFSafariViewController alloc] initWithURL:url];
-+    player.modalPresentationStyle = UIModalPresentationFullScreen;
-+    player.dismissButtonStyle = SFSafariViewControllerDismissButtonStyleDone;
-+    [host presentViewController:player animated:YES completion:nil];
++    if (!host.window) return 0;
++    if (!player || player.showID != showID) {
++        [player detach];
++        player = [[HGInlineShowView alloc] initWithShowID:showID];
++        objc_setAssociatedObject(host, &playerKey, player, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++        [host addSubview:player];
++    }
++    player.frame = rect;
++    player.hidden = NO;
 +    return 1;
 +}
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
@@ -195,7 +385,7 @@ diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
              api::line_probe,
              api::check_update,
              api::open_url,
-+            show_player::open_show_player,
++            show_player::sync_show_player,
              api::api_login,
              api::api_register,
              api::api_logout,
@@ -203,32 +393,33 @@ diff --git a/src-tauri/src/show_player.rs b/src-tauri/src/show_player.rs
 new file mode 100644
 --- /dev/null
 +++ b/src-tauri/src/show_player.rs
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,28 @@
 +#[tauri::command]
-+pub async fn open_show_player(window: tauri::WebviewWindow, id: u64) -> Result<(), String> {
++pub async fn sync_show_player(window: tauri::WebviewWindow, id: u64, frame: Option<[f64; 4]>) -> Result<(), String> {
 +    #[cfg(target_os = "ios")]
 +    {
-+        if id == 0 {
-+            return Err("找不到這部劇".into());
++        if id == 0 || frame.iter().flatten().any(|n| !n.is_finite()) {
++            return Err("無效的播放器位置".into());
 +        }
 +        extern "C" {
-+            fn hghub_present_show(controller: *mut std::ffi::c_void, id: u64) -> i32;
++            fn hghub_sync_inline(host: *mut std::ffi::c_void, id: u64, frame: *const f64) -> i32;
 +        }
 +        let (sender, receiver) = tokio::sync::oneshot::channel();
 +        window.with_webview(move |webview| {
-+            // Tauri runs this closure on the UI thread and owns the controller for its duration.
-+            let presented = unsafe { hghub_present_show(webview.view_controller(), id) };
-+            let _ = sender.send(presented);
-+        }).map_err(|_| "無法連接播放畫面".to_string())?;
++            let rect = frame.as_ref().map_or(std::ptr::null(), |r| r.as_ptr());
++            // Tauri runs this callback on the UI thread. Both pointers live through the call.
++            let ok = unsafe { hghub_sync_inline(webview.inner(), id, rect) };
++            let _ = sender.send(ok);
++        }).map_err(|e| e.to_string())?;
 +        match receiver.await {
 +            Ok(1) => Ok(()),
-+            _ => Err("請關閉目前的彈出視窗，再開啟劇集頁".into()),
++            _ => Err("無法載入內嵌播放器".into()),
 +        }
 +    }
 +    #[cfg(not(target_os = "ios"))]
 +    {
-+        let _ = (window, id);
-+        Err("此播放視窗只適用於 iOS".into())
++        let _ = (window, id, frame);
++        Err("此播放器只適用於 iOS".into())
 +    }
 +}
 diff --git a/src-tauri/tauri.ios.conf.json b/src-tauri/tauri.ios.conf.json
@@ -240,7 +431,153 @@ diff --git a/src-tauri/tauri.ios.conf.json b/src-tauri/tauri.ios.conf.json
      "iOS": {
 -      "minimumSystemVersion": "15.0"
 +      "minimumSystemVersion": "15.0",
-+      "bundleVersion": "2"
++      "bundleVersion": "3"
      }
    }
  }
+diff --git a/tests/ios-inline/Smoke.m b/tests/ios-inline/Smoke.m
+new file mode 100644
+--- /dev/null
++++ b/tests/ios-inline/Smoke.m
+@@ -0,0 +1,81 @@
++#import <UIKit/UIKit.h>
++#import <WebKit/WebKit.h>
++#import <objc/runtime.h>
++
++extern int32_t hghub_sync_inline(void *host, uint64_t showID, const double *rect);
++
++// Exercise the production view with a local clip. Record the requested URL and
++// substitute only the initial network request, so the simulator needs no site login.
++static NSString *requestedPath;
++static WKNavigation *loadFixture(WKWebView *view, SEL selector, NSURLRequest *request) {
++    requestedPath = request.URL.absoluteString;
++    NSURL *page = [NSBundle.mainBundle URLForResource:@"fixture" withExtension:@"html"];
++    return [view loadFileURL:page allowingReadAccessToURL:page.URLByDeletingLastPathComponent];
++}
++static void finish(NSString *result) {
++    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/result.txt"];
++    [result writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
++}
++@interface SmokeApp : UIResponder <UIApplicationDelegate>
++@property(nonatomic, strong) UIWindow *window;
++@property(nonatomic, strong) WKWebView *host;
++@end
++@implementation SmokeApp
++- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
++    method_setImplementation(class_getInstanceMethod(WKWebView.class, @selector(loadRequest:)), (IMP)loadFixture);
++    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
++    UIViewController *root = [UIViewController new];
++    self.host = [[WKWebView alloc] initWithFrame:self.window.bounds];
++    root.view = self.host;
++    self.window.rootViewController = root;
++    [self.window makeKeyAndVisible];
++    [self performSelector:@selector(start) withObject:nil afterDelay:0.5];
++    return YES;
++}
++- (void)start {
++    double rect[] = {0, 0.2, 1, 0.7};
++    if (!hghub_sync_inline((__bridge void *)self.host, 81, rect)) { finish(@"mount failed"); return; }
++    UIView *box = self.host.subviews.lastObject;
++    WKWebView *web = (id)box.subviews.firstObject;
++    if (![web isKindOfClass:WKWebView.class] || !web.configuration.allowsInlineMediaPlayback ||
++        ![requestedPath isEqual:@"https://huangguoai.com/video/81/"] ||
++        fabs(box.frame.origin.y - self.host.bounds.size.width * .2) > 1) { finish(@"wrong view or frame"); return; }
++    [self poll:web box:box tries:70];
++}
++- (void)poll:(WKWebView *)web box:(UIView *)box tries:(NSInteger)tries {
++    NSString *js = @"(() => {const v=document.querySelector('video');return !!v && v.playsInline && v.currentTime>0 && v.webkitPresentationMode==='inline'})()";
++    [web evaluateJavaScript:js completionHandler:^(id playing, NSError *error) {
++        if (!error && [playing boolValue]) {
++            void *host = (__bridge void *)self.host;
++            double resized[] = {.05, .12, .9, .8};
++            double hidden[] = {0, 0, 0, 0};
++            hghub_sync_inline(host, 81, hidden);
++            BOOL hid = box.hidden;
++            hghub_sync_inline(host, 81, resized);
++            hghub_sync_inline(host, 80, NULL);
++            if (!hid || box.hidden || self.host.subviews.lastObject != box ||
++                box.subviews.firstObject != web || self.window.rootViewController.presentedViewController) {
++                finish(@"resize replaced player or presented a new screen"); return;
++            }
++            hghub_sync_inline(host, 82, resized);
++            UIView *next = self.host.subviews.lastObject;
++            if (box.superview || next == box || ![requestedPath hasSuffix:@"/82/"]) { finish(@"switch failed"); return; }
++            hghub_sync_inline(host, 81, NULL);
++            if (!next.superview) { finish(@"stale cleanup removed current show"); return; }
++            hghub_sync_inline(host, 82, NULL);
++            finish(next.superview ? @"cleanup failed" : @"PASS inline video played without presenting a controller; resize, switch and cleanup passed");
++        } else if (tries > 0) {
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250*NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
++                [self poll:web box:box tries:tries-1];
++            });
++        } else {
++            [web evaluateJavaScript:@"String(document.querySelector('video')?.error?.message || document.querySelector('video')?.webkitPresentationMode || document.readyState)" completionHandler:^(id detail, NSError *e) {
++                finish([NSString stringWithFormat:@"inline video did not play: %@ %@", detail, e ?: @""]);
++            }];
++        }
++    }];
++}
++@end
++int main(int argc, char **argv) {
++    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(SmokeApp.class)); }
++}
+diff --git a/tests/ios-inline/fixture.html b/tests/ios-inline/fixture.html
+new file mode 100644
+--- /dev/null
++++ b/tests/ios-inline/fixture.html
+@@ -0,0 +1,11 @@
++<!doctype html>
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<body><script>
++const video = document.createElement('video');
++video.muted = true;
++video.loop = true;
++video.controls = true;
++document.body.append(video);
++video.src = 'sample.mp4';
++video.play().catch(error => { document.title = error.message; });
++</script></body>
+diff --git a/tests/ios-inline/run.sh b/tests/ios-inline/run.sh
+new file mode 100644
+--- /dev/null
++++ b/tests/ios-inline/run.sh
+@@ -0,0 +1,33 @@
++#!/bin/bash
++set -euo pipefail
++app="$RUNNER_TEMP/InlineSmoke.app"
++bundle="dev.hghub.inline-smoke"
++mkdir -p "$app"
++device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; rows=json.load(sys.stdin)["devices"]; print(next(d["udid"] for rt,ds in sorted(rows.items(), reverse=True) if "iOS" in rt for d in ds if d["name"].startswith("iPhone")))')
++xcrun simctl boot "$device"
++xcrun simctl bootstatus "$device" -b
++sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
++xcrun --sdk iphonesimulator clang -fobjc-arc -target "$(uname -m)-apple-ios15.0-simulator" -isysroot "$sdk" \
++    tests/ios-inline/Smoke.m src-tauri/src/ios_show_player.m -framework Foundation -framework UIKit -framework WebKit -o "$app/InlineSmoke"
++cp tests/ios-inline/fixture.html "$app/"
++python3 - "$app" "$bundle" <<'PY'
++import base64, pathlib, plistlib, sys
++app = pathlib.Path(sys.argv[1])
++(app / "sample.mp4").write_bytes(base64.b64decode(pathlib.Path("tests/ios-inline/sample.b64").read_bytes()))
++with (app / "Info.plist").open("wb") as f:
++    plistlib.dump(dict(CFBundleExecutable="InlineSmoke", CFBundleIdentifier=sys.argv[2], CFBundlePackageType="APPL", CFBundleName="InlineSmoke", CFBundleVersion="1", CFBundleShortVersionString="1.0", MinimumOSVersion="15.0", UIDeviceFamily=[1], LSRequiresIPhoneOS=True, UILaunchScreen={}), f)
++PY
++codesign --force --sign - "$app"
++xcrun simctl install "$device" "$app"
++xcrun simctl launch "$device" "$bundle"
++data=$(xcrun simctl get_app_container "$device" "$bundle" data)
++for i in {1..80}; do
++    if [[ -f "$data/Documents/result.txt" ]]; then
++        cat "$data/Documents/result.txt"
++        grep -q '^PASS ' "$data/Documents/result.txt"
++        exit $?
++    fi
++    sleep 1
++done
++echo "Inline playback test did not finish."
++exit 1
+diff --git a/tests/ios-inline/sample.b64 b/tests/ios-inline/sample.b64
+new file mode 100644
+--- /dev/null
++++ b/tests/ios-inline/sample.b64
+@@ -0,0 +1 @@
++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
