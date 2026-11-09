@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-iphone.yml'
+      - 'iphone-player.patch'
 
 permissions:
   contents: read
@@ -19,6 +20,15 @@ jobs:
           repository: Minireel/HGhub
           ref: 79827baa7542fead68919e7b45f5bfde86b18ee7
           persist-credentials: false
+
+      - name: Get the iPhone build changes
+        uses: actions/checkout@v4
+        with:
+          path: iphone-build
+          persist-credentials: false
+
+      - name: Apply the in-app player update
+        run: git apply --whitespace=error iphone-build/iphone-player.patch
 
       - uses: actions/setup-node@v4
         with:
@@ -64,15 +74,21 @@ jobs:
               executable = plists[0].rsplit("/", 1)[0] + "/" + info["CFBundleExecutable"]
               if (info.get("CFBundleIdentifier") != "com.hghub.huangguo"
                       or info.get("CFBundleShortVersionString") != "1.2.0"
+                      or info.get("CFBundleVersion") != "2"
                       or "iPhoneOS" not in info.get("CFBundleSupportedPlatforms", [])
                       or archive.getinfo(executable).file_size == 0):
                   raise SystemExit("The IPA does not contain the expected iPhone build")
+              binary = archive.read(executable)
+              if b"SFSafariViewController" not in binary or b"open_show_player" not in binary:
+                  raise SystemExit("Missing in-app player integration")
           Path("output").mkdir(exist_ok=True)
-          shutil.copyfile(package, "output/HGhub-1.2.0-iPhone.ipa")
+          shutil.copyfile(package, "output/HGhub-1.2.0-iPhone-build2.ipa")
+
+          shutil.copyfile("LICENSE", "output/LICENSE.txt")
 
       - uses: actions/upload-artifact@v4
         with:
           name: HGhub-iPhone
-          path: output/HGhub-1.2.0-iPhone.ipa
+          path: output/
           if-no-files-found: error
           retention-days: 7
