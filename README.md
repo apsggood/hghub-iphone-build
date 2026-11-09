@@ -1,10 +1,10 @@
 # HGhub iPhone 個人建置
 
-以 HGhub 1.2.0 建置，套件識別碼為 `com.hghub.huangguo`，iOS 建置編號為 2。[上游版本](https://github.com/Minireel/HGhub/tree/79827baa7542fead68919e7b45f5bfde86b18ee7)
+基於 [HGhub 1.2.0](https://github.com/Minireel/HGhub/tree/79827baa7542fead68919e7b45f5bfde86b18ee7)，支援 iOS 15 及以上，建置編號為 3。
 
-一般劇集沿用原播放器。劇集沒有提供播放網址時，HGhub 會自動在 App 內開啟該劇的原站頁面。可留在這個頁面選集、播放，點「完成」回到 HGhub。網站可能要求點播放或登入。「重试」會重新取得該集的播放資訊。
+劇集沒有提供播放網址時，HGhub 會在目前的影片卡裡載入原站的播放頁。可以在頁面選集和播放，在下方工具列滑動或點上下箭頭換劇。網站可能要求登入或點播放。
 
-登入 GitHub，在成功的建置紀錄下方下載 **HGhub-iPhone**，解壓縮可取得 `HGhub-1.2.0-iPhone-build2.ipa`。Windows 使用者可用 Sideloadly 和原來的 Apple 帳號安裝更新。雲端下載檔保留七天，到期可在 Actions 重新建置。[建置與下載](https://github.com/apsggood/hghub-iphone-build/actions/workflows/build-iphone.yml) · [Sideloadly](https://sideloadly.io/)
+登入 GitHub，在[成功的建置紀錄](https://github.com/apsggood/hghub-iphone-build/actions/workflows/build-iphone.yml)下方下載 **HGhub-iPhone**。解壓縮後，把 `HGhub-1.2.0-iPhone-build3.ipa` 拖進 Windows 的 [Sideloadly](https://sideloadly.io/)，使用原 Apple 帳號更新。
 
 HGhub 採用 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)。
 
