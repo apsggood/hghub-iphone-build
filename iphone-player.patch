@@ -230,7 +230,7 @@ new file mode 100644
 diff --git a/src-tauri/build.rs b/src-tauri/build.rs
 --- a/src-tauri/build.rs
 +++ b/src-tauri/build.rs
-@@ -1,3 +1,11 @@
+@@ -1,3 +1,12 @@
  fn main() {
 +    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
 +        cc::Build::new()
@@ -239,6 +239,7 @@ diff --git a/src-tauri/build.rs b/src-tauri/build.rs
 +            .compile("ios_show_player");
 +        println!("cargo:rerun-if-changed=src/ios_show_player.m");
 +        println!("cargo:rustc-link-lib=framework=WebKit");
++        println!("cargo:rustc-link-lib=framework=CoreGraphics");
 +    }
      tauri_build::build()
  }
@@ -552,7 +553,7 @@ new file mode 100644
 +xcrun simctl bootstatus "$device" -b
 +sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
 +xcrun --sdk iphonesimulator clang -fobjc-arc -target "$(uname -m)-apple-ios15.0-simulator" -isysroot "$sdk" \
-+    tests/ios-inline/Smoke.m src-tauri/src/ios_show_player.m -framework Foundation -framework UIKit -framework WebKit -o "$app/InlineSmoke"
++    tests/ios-inline/Smoke.m src-tauri/src/ios_show_player.m -framework Foundation -framework UIKit -framework WebKit -framework CoreGraphics -o "$app/InlineSmoke"
 +cp tests/ios-inline/fixture.html "$app/"
 +python3 - "$app" "$bundle" <<'PY'
 +import base64, pathlib, plistlib, sys
