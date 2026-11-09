@@ -1,0 +1,199 @@
+diff --git a/src/api.ts b/src/api.ts
+--- a/src/api.ts
++++ b/src/api.ts
+@@ -111,6 +111,7 @@
+   /* 更新检查：对比 GitHub Release 的 tag */
+   checkUpdate: () => call<UpdateInfo>("check_update"),
+   openUrl: (url: string) => call<void>("open_url", { url }),
++  openShowPlayer: (id: number) => call<void>("open_show_player", { id }),
+ };
+ 
+ /* ── 更新检查 ───────────────────────────────────────────── */
+diff --git a/src/components/Feed.tsx b/src/components/Feed.tsx
+--- a/src/components/Feed.tsx
++++ b/src/components/Feed.tsx
+@@ -1,5 +1,5 @@
+ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+-import { api, cover, fmt, fmtTime, isMobile, mediaUrl } from "../api";
++import { api, cover, fmt, fmtTime, isIos, isMobile, mediaUrl } from "../api";
+ import type { Detail, Episode, Post, VideoCard } from "../types";
+ import { useStore } from "../store";
+ import { Avatar, Img, Sheet } from "./ui";
+@@ -43,6 +43,7 @@
+   const [epMap, setEpMap] = useState<Record<number, number>>(() => (startEp ? { [videoIds[startIndex]]: startEp } : {}));
+   const [details, setDetails] = useState<Record<number, Detail>>({});
+   const [playUrls, setPlayUrls] = useState<Record<string, string>>({});
++  const [sourceAttempt, setSourceAttempt] = useState(0);
+   const [cards, setCards] = useState<Record<number, VideoCard>>({});
+   const [posts, setPosts] = useState<Record<number, Post>>({});
+ 
+@@ -249,7 +250,28 @@
+       .catch((e) => { if (alive) setErr((e as Error).message || "取播放地址失败"); });
+     return () => { alive = false; };
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [curId, curEp]);
++  }, [curId, curEp, sourceAttempt]);
++
++  const retryPlayback = () => {
++    setErr("");
++    setWaiting(true);
++    setPlayUrls(previous => {
++      if (!previous[playKey]) return previous;
++      const next = { ...previous };
++      delete next[playKey];
++      return next;
++    });
++    setSourceAttempt(n => n + 1);
++  };
++
++  const openShowPlayer = async () => {
++    videoRef.current?.pause();
++    try {
++      await api.openShowPlayer(curId);
++    } catch (e) {
++      toast(e instanceof Error ? e.message : "無法開啟劇集頁，請再試一次", "info");
++    }
++  };
+ 
+   /* 切换条目/集数时重置播放状态 */
+   useEffect(() => {
+@@ -748,7 +770,11 @@
+                   <div className="rounded-xl p-5 flex flex-col items-center gap-3 text-[13px] hg-ink-2" style={{ background: "rgba(0,0,0,.7)" }}>
+                     <span>视频暂时无法加载</span>
+                     <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{err}</span>
+-                    <button className="hg-link text-[12.5px]" onClick={() => { setErr(""); setWaiting(true); videoRef.current?.play(); }}>重试</button>
++                    {isIos && kind === "video" && (
++                      <button type="button" className="min-h-11 rounded-full bg-white px-5 text-[14px] font-semibold text-black"
++                        onClick={openShowPlayer}>在 App 內播放</button>
++                    )}
++                    <button className="hg-link text-[12.5px]" onClick={retryPlayback}>重试</button>
+                   </div>
+                 </div>
+               )}
+diff --git a/src-tauri/build.rs b/src-tauri/build.rs
+--- a/src-tauri/build.rs
++++ b/src-tauri/build.rs
+@@ -1,3 +1,11 @@
+ fn main() {
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
++        cc::Build::new()
++            .file("src/ios_show_player.m")
++            .flag("-fobjc-arc")
++            .compile("ios_show_player");
++        println!("cargo:rerun-if-changed=src/ios_show_player.m");
++        println!("cargo:rustc-link-lib=framework=SafariServices");
++    }
+     tauri_build::build()
+ }
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -1609,6 +1609,7 @@
+ dependencies = [
+  "aes",
+  "base64 0.22.1",
++ "cc",
+  "objc2",
+  "objc2-app-kit",
+  "objc2-foundation",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -12,6 +12,7 @@
+ crate-type = ["staticlib", "cdylib", "rlib"]
+ 
+ [build-dependencies]
++cc = "1"
+ tauri-build = { version = "2", features = [] }
+ 
+ [dependencies]
+diff --git a/src-tauri/src/ios_show_player.m b/src-tauri/src/ios_show_player.m
+new file mode 100644
+--- /dev/null
++++ b/src-tauri/src/ios_show_player.m
+@@ -0,0 +1,21 @@
++#import <SafariServices/SafariServices.h>
++#import <UIKit/UIKit.h>
++#include <stdint.h>
++
++int32_t hghub_present_show(void *controller, uint64_t showID) {
++    UIViewController *host = (__bridge UIViewController *)controller;
++    if (!NSThread.isMainThread || !host.viewIfLoaded.window || showID == 0) {
++        return 0;
++    }
++    if (host.presentedViewController) {
++        return [host.presentedViewController isKindOfClass:SFSafariViewController.class] ? 1 : 0;
++    }
++    // The upstream share button opens the show's public page. Episode selection is on that page.
++    NSString *address = [NSString stringWithFormat:@"https://huangguoai.com/video/%llu/", (unsigned long long)showID];
++    NSURL *url = [NSURL URLWithString:address];
++    SFSafariViewController *player = [[SFSafariViewController alloc] initWithURL:url];
++    player.modalPresentationStyle = UIModalPresentationFullScreen;
++    player.dismissButtonStyle = SFSafariViewControllerDismissButtonStyleDone;
++    [host presentViewController:player animated:YES completion:nil];
++    return 1;
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -8,6 +8,7 @@
+ mod network_policy;
+ mod playback_log;
+ mod session;
++mod show_player;
+ 
+ use api::Api;
+ use tauri::Manager;
+@@ -140,6 +141,7 @@
+             api::line_probe,
+             api::check_update,
+             api::open_url,
++            show_player::open_show_player,
+             api::api_login,
+             api::api_register,
+             api::api_logout,
+diff --git a/src-tauri/src/show_player.rs b/src-tauri/src/show_player.rs
+new file mode 100644
+--- /dev/null
++++ b/src-tauri/src/show_player.rs
+@@ -0,0 +1,27 @@
++#[tauri::command]
++pub async fn open_show_player(window: tauri::WebviewWindow, id: u64) -> Result<(), String> {
++    #[cfg(target_os = "ios")]
++    {
++        if id == 0 {
++            return Err("找不到這部劇".into());
++        }
++        extern "C" {
++            fn hghub_present_show(controller: *mut std::ffi::c_void, id: u64) -> i32;
++        }
++        let (sender, receiver) = tokio::sync::oneshot::channel();
++        window.with_webview(move |webview| {
++            // Tauri runs this closure on the UI thread and owns the controller for its duration.
++            let presented = unsafe { hghub_present_show(webview.view_controller(), id) };
++            let _ = sender.send(presented);
++        }).map_err(|_| "無法連接播放畫面".to_string())?;
++        match receiver.await {
++            Ok(1) => Ok(()),
++            _ => Err("請關閉目前的彈出視窗，再開啟劇集頁".into()),
++        }
++    }
++    #[cfg(not(target_os = "ios"))]
++    {
++        let _ = (window, id);
++        Err("此播放視窗只適用於 iOS".into())
++    }
++}
+diff --git a/src-tauri/tauri.ios.conf.json b/src-tauri/tauri.ios.conf.json
+--- a/src-tauri/tauri.ios.conf.json
++++ b/src-tauri/tauri.ios.conf.json
+@@ -2,7 +2,8 @@
+   "$schema": "https://schema.tauri.app/config/2",
+   "bundle": {
+     "iOS": {
+-      "minimumSystemVersion": "15.0"
++      "minimumSystemVersion": "15.0",
++      "bundleVersion": "2"
+     }
+   }
+ }
