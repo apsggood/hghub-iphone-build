@@ -1,0 +1,78 @@
+name: Build HGhub for iPhone
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-iphone.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  iphone:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - name: Get HGhub 1.2.0 from its author
+        uses: actions/checkout@v4
+        with:
+          repository: Minireel/HGhub
+          ref: 79827baa7542fead68919e7b45f5bfde86b18ee7
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Prepare iPhone build tools
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          command -v pod >/dev/null || brew install cocoapods
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          pnpm install --frozen-lockfile
+          # The release's CLI predates unsigned iOS exports. Update only the build tool.
+          pnpm add -DE @tauri-apps/cli@2.12.4
+
+      - name: Build unsigned IPA for a physical iPhone
+        run: |
+          pnpm tauri ios init --ci
+          pnpm tauri ios build --ci --no-sign
+
+      - name: Check the app bundle and collect the IPA
+        shell: python3 {0}
+        run: |
+          from pathlib import Path
+          import plistlib
+          import shutil
+          import zipfile
+
+          packages = list(Path("src-tauri/gen/apple").rglob("*.ipa"))
+          if len(packages) != 1:
+              raise SystemExit(f"Expected one device IPA, found {packages}")
+          package = packages[0]
+          with zipfile.ZipFile(package) as archive:
+              names = archive.namelist()
+              plists = [n for n in names if n.startswith("Payload/") and n.endswith(".app/Info.plist") and n.count("/") == 2]
+              if len(plists) != 1:
+                  raise SystemExit("Missing main iOS app bundle")
+              info = plistlib.loads(archive.read(plists[0]))
+              executable = plists[0].rsplit("/", 1)[0] + "/" + info["CFBundleExecutable"]
+              if (info.get("CFBundleIdentifier") != "com.hghub.huangguo"
+                      or info.get("CFBundleShortVersionString") != "1.2.0"
+                      or "iPhoneOS" not in info.get("CFBundleSupportedPlatforms", [])
+                      or archive.getinfo(executable).file_size == 0):
+                  raise SystemExit("The IPA does not contain the expected iPhone build")
+          Path("output").mkdir(exist_ok=True)
+          shutil.copyfile(package, "output/HGhub-1.2.0-iPhone.ipa")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iPhone
+          path: output/HGhub-1.2.0-iPhone.ipa
+          if-no-files-found: error
+          retention-days: 7
